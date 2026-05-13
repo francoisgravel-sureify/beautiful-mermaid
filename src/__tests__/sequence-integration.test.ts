@@ -72,6 +72,56 @@ describe('renderMermaidSVG – sequence diagrams', () => {
     expect(svg).toContain('Error')
   })
 
+  it('renders rect color block with translucent fill and no tab label', () => {
+    const svg = renderMermaidSVG(`sequenceDiagram
+      A->>B: Setup
+      rect rgb(255, 250, 230)
+        A->>B: Inside
+      end`)
+    // The color is applied as a fill on the block rect.
+    expect(svg).toContain('data-type="rect"')
+    expect(svg).toContain('fill="rgb(255, 250, 230)"')
+    // No tab label of the form "rect [rgb(...)]" — that would mean the
+    // RGB triple is being rendered as visible text instead of as a fill.
+    expect(svg).not.toContain('rect [rgb(255, 250, 230)]')
+  })
+
+  it('renders rect color block accepting rgba, hex, and named colors', () => {
+    const rgba = renderMermaidSVG(`sequenceDiagram
+      A->>B: m
+      rect rgba(10, 20, 30, 0.5)
+        A->>B: n
+      end`)
+    expect(rgba).toContain('fill="rgba(10, 20, 30, 0.5)"')
+
+    const hex = renderMermaidSVG(`sequenceDiagram
+      A->>B: m
+      rect #fff5e6
+        A->>B: n
+      end`)
+    expect(hex).toContain('fill="#fff5e6"')
+
+    const named = renderMermaidSVG(`sequenceDiagram
+      A->>B: m
+      rect lightblue
+        A->>B: n
+      end`)
+    expect(named).toContain('fill="lightblue"')
+  })
+
+  it('falls back to labeled-tab rendering when rect color is unparseable', () => {
+    // A bare `rect` with no color and no other recognizable form should still
+    // render the block (with a tab) rather than vanish silently.
+    const svg = renderMermaidSVG(`sequenceDiagram
+      A->>B: m
+      rect not-a-color(garbage
+        A->>B: n
+      end`)
+    expect(svg).toContain('data-type="rect"')
+    // Falls back to the labeled tab.
+    expect(svg).toContain('rect [not-a-color(garbage]')
+  })
+
   it('renders notes', () => {
     const svg = renderMermaidSVG(`sequenceDiagram
       A->>B: Hello

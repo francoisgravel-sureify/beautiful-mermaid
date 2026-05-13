@@ -228,11 +228,41 @@ function renderMessage(msg: PositionedMessage): string {
 }
 
 /**
- * Render a block background (loop/alt/opt).
+ * Validate a sequence-diagram `rect` color label and return it for direct use
+ * as an SVG `fill` value. Returns null if the label is missing or doesn't match
+ * a recognized CSS color form, in which case the block falls back to the
+ * labeled-tab rendering used by loop/alt/opt/par/critical/break.
+ *
+ * Mermaid's documented forms are `rgb(r, g, b)` and `rgba(r, g, b, a)`; we
+ * additionally accept hex (`#rgb`, `#rrggbb`, `#rrggbbaa`) and simple named
+ * colors (e.g. `lightblue`) for parity with what users commonly write.
+ */
+function parseSequenceRectColor(label: string): string | null {
+  const v = label.trim()
+  if (!v) return null
+  if (/^rgba?\(\s*\d+(?:\s*,\s*\d+){2}(?:\s*,\s*(?:\d*\.)?\d+)?\s*\)$/i.test(v)) return v
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v)) return v
+  if (/^[a-z]+$/i.test(v)) return v.toLowerCase()
+  return null
+}
+
+/**
+ * Render a block background.
+ *
+ * Most block types (loop/alt/opt/par/critical/break) render as an outlined
+ * region with a labeled tab in the top-left ("loop [retry]", "alt [success]").
+ * `rect <color>` is special-cased to match Mermaid's behavior: the color is
+ * applied as a translucent background fill behind the enclosed messages, with
+ * no tab label drawn. If the rect's color label is missing or unparseable, we
+ * fall back to the standard labeled-tab rendering so the block is still
+ * visible rather than silently invisible.
+ *
  * Wrapped in <g class="block"> with semantic data attributes.
  */
 function renderBlock(block: PositionedBlock): string {
   const parts: string[] = []
+
+  const rectFill = block.type === 'rect' ? parseSequenceRectColor(block.label) : null
 
   // Semantic wrapper with block metadata
   const labelAttr = block.label ? ` data-label="${escapeAttr(block.label)}"` : ''
@@ -240,35 +270,44 @@ function renderBlock(block: PositionedBlock): string {
     `<g class="block" data-type="${escapeAttr(block.type)}"${labelAttr}>`
   )
 
-  // Outer rectangle
-  parts.push(
-    `  <rect x="${block.x}" y="${block.y}" width="${block.width}" height="${block.height}" ` +
-    `rx="0" ry="0" fill="none" stroke="var(--_node-stroke)" stroke-width="${STROKE_WIDTHS.outerBox}" />`
-  )
-
-  // Type label tab (top-left corner)
-  // For multi-line block labels, we use the first line for the tab but show full label
-  const labelText = `${block.type}${block.label ? ` [${block.label}]` : ''}`
-  const firstLine = labelText.split('\n')[0]!
-  const tabWidth = estimateTextWidth(firstLine, FONT_SIZES.edgeLabel, FONT_WEIGHTS.groupHeader) + 16
-  const tabHeight = 18
-
-  parts.push(
-    `  <rect x="${block.x}" y="${block.y}" width="${tabWidth}" height="${tabHeight}" ` +
-    `fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="${STROKE_WIDTHS.outerBox}" />`
-  )
-  // Block type label (supports multi-line via <br> tags)
-  parts.push(
-    '  ' + renderMultilineText(
-      labelText,
-      block.x + 6,
-      block.y + tabHeight / 2,
-      FONT_SIZES.edgeLabel,
-      `font-size="${FONT_SIZES.edgeLabel}" font-weight="${FONT_WEIGHTS.groupHeader}" fill="var(--_text-sec)"`
+  if (rectFill) {
+    // Color-fill rect: translucent background, no outline, no tab label.
+    parts.push(
+      `  <rect x="${block.x}" y="${block.y}" width="${block.width}" height="${block.height}" ` +
+      `rx="0" ry="0" fill="${escapeAttr(rectFill)}" stroke="none" />`
     )
-  )
+  } else {
+    // Outer rectangle (loop/alt/opt/par/critical/break, or rect with no usable color)
+    parts.push(
+      `  <rect x="${block.x}" y="${block.y}" width="${block.width}" height="${block.height}" ` +
+      `rx="0" ry="0" fill="none" stroke="var(--_node-stroke)" stroke-width="${STROKE_WIDTHS.outerBox}" />`
+    )
 
-  // Divider lines (for alt/else, par/and)
+    // Type label tab (top-left corner)
+    // For multi-line block labels, we use the first line for the tab but show full label
+    const labelText = `${block.type}${block.label ? ` [${block.label}]` : ''}`
+    const firstLine = labelText.split('\n')[0]!
+    const tabWidth = estimateTextWidth(firstLine, FONT_SIZES.edgeLabel, FONT_WEIGHTS.groupHeader) + 16
+    const tabHeight = 18
+
+    parts.push(
+      `  <rect x="${block.x}" y="${block.y}" width="${tabWidth}" height="${tabHeight}" ` +
+      `fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="${STROKE_WIDTHS.outerBox}" />`
+    )
+    // Block type label (supports multi-line via <br> tags)
+    parts.push(
+      '  ' + renderMultilineText(
+        labelText,
+        block.x + 6,
+        block.y + tabHeight / 2,
+        FONT_SIZES.edgeLabel,
+        `font-size="${FONT_SIZES.edgeLabel}" font-weight="${FONT_WEIGHTS.groupHeader}" fill="var(--_text-sec)"`
+      )
+    )
+  }
+
+  // Divider lines (for alt/else, par/and). rect blocks never have dividers but
+  // the loop is safe to leave unconditional.
   for (const divider of block.dividers) {
     parts.push(
       `  <line x1="${block.x}" y1="${divider.y}" x2="${block.x + block.width}" y2="${divider.y}" ` +
