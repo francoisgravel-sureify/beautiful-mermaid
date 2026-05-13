@@ -188,11 +188,14 @@ export function layoutSequenceDiagram(
   // tab clears the notes (otherwise the tab would overlap a note that's the
   // first content inside the block).
   //
-  // Per before-note: noteH + 4 (gap above the note). Plus a trailing 4 for the
-  // gap between the last note's bottom and the message arrow below.
+  // Per before-note: noteH + 4 (gap above the note). Plus a trailing
+  // `noteToMessageGap` between the last note's bottom and the message arrow,
+  // sized to clear the message label (rendered at msg.y - 10 with font
+  // FONT_SIZES.edgeLabel, so its visual top sits ~20px above the arrow).
+  const noteToMessageGap = 24
   const beforeNotesExtraByMsgIdx = new Map<number, number>()
   for (const [target, notes] of notesByBeforeIndex) {
-    const totalH = notes.length * (noteH + 4) + 4
+    const totalH = notes.length * (noteH + 4) + noteToMessageGap
     beforeNotesExtraByMsgIdx.set(target, totalH)
     const prev = extraSpaceBefore.get(target) ?? 0
     extraSpaceBefore.set(target, prev + totalH)
@@ -207,13 +210,16 @@ export function layoutSequenceDiagram(
 
   const positionedNotes: PositionedNote[] = []
 
-  /** Place a "before" note inside the gap above messageY. Returns the next Y to use. */
+  /** Place "before" notes in the reserved space immediately above msgY. */
   const placeBeforeNotes = (msgIdx: number, msgY: number) => {
     const notes = notesByBeforeIndex.get(msgIdx)
     if (!notes || notes.length === 0) return
-    // Stack notes upward from (msgY - 4) so the last note sits just above
-    // the message arrow, with each preceding note above that with a gap.
-    let cursor = msgY - 4
+    // Stack notes upward from (msgY - noteToMessageGap) so the last note's
+    // bottom clears the message label, then each preceding note sits above
+    // with a 4px gap. The reserved space (see `beforeNotesExtraByMsgIdx`
+    // above) sums to exactly `notes.length * (noteH + 4) + noteToMessageGap`,
+    // matching this layout.
+    let cursor = msgY - noteToMessageGap
     for (let i = notes.length - 1; i >= 0; i--) {
       const note = notes[i]!
       const w = computeNoteWidth(note)
