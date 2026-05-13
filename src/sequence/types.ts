@@ -60,6 +60,15 @@ export interface Note {
   position: 'left' | 'right' | 'over'
   /** Message index after which this note appears */
   afterIndex: number
+  /**
+   * When true, the note is anchored at the *start* of a region rather than
+   * after a preceding message. Set when the note is parsed either before any
+   * message exists in the diagram, or as the first element inside a freshly
+   * opened block (loop/alt/opt/par/critical/break/rect). In layout, such notes
+   * are positioned *above* message `afterIndex + 1` rather than below message
+   * `afterIndex`, which keeps them inside the surrounding block.
+   */
+  before: boolean
 }
 
 // ============================================================================

@@ -109,6 +109,75 @@ describe('renderMermaidSVG – sequence diagrams', () => {
     expect(named).toContain('fill="lightblue"')
   })
 
+  it('renders a note placed as the first content of a block', () => {
+    // The note appears INSIDE the rect block in the source. It must show up
+    // in the rendered output (issue 1) and must be positioned inside the
+    // block's bounding rect (issue 3), not in the gap above it.
+    const svg = renderMermaidSVG(`sequenceDiagram
+      participant A
+      participant B
+      rect rgb(255, 250, 230)
+        Note over A,B: Inside the block
+        A->>B: msg
+      end`)
+    expect(svg).toContain('>Inside the block</text>')
+
+    // Find the block rect (the rect with the data-type="rect" wrapper) and
+    // the note rect. The note's Y must fall within the block's Y range.
+    const blockMatch = svg.match(/data-type="rect"[^>]*>\s*<rect x="[\d.-]+" y="([\d.-]+)" width="[\d.-]+" height="([\d.-]+)"/)
+    expect(blockMatch).toBeTruthy()
+    const blockY = parseFloat(blockMatch![1]!)
+    const blockH = parseFloat(blockMatch![2]!)
+    // The note text is rendered inside <g class="note">; grab its Y from the polygon points or rect.
+    const notePolyMatch = svg.match(/class="note"[^>]*>\s*<polygon points="([\d.\- ,]+)"/)
+    expect(notePolyMatch).toBeTruthy()
+    // Polygon points are "x1,y1 x2,y2 ..." — extract the smallest Y.
+    const ys = notePolyMatch![1]!.split(/\s+/).map(p => parseFloat(p.split(',')[1] ?? '0'))
+    const noteTop = Math.min(...ys)
+    expect(noteTop).toBeGreaterThan(blockY)
+    expect(noteTop).toBeLessThan(blockY + blockH)
+  })
+
+  it('renders a note that appears before any message', () => {
+    // Without a fix, a note with no preceding message gets afterIndex = -1
+    // and is silently dropped. It should render at the top of the diagram.
+    const svg = renderMermaidSVG(`sequenceDiagram
+      participant A
+      participant B
+      Note over A,B: Opening note
+      A->>B: msg`)
+    expect(svg).toContain('>Opening note</text>')
+  })
+
+  it('stretches `Note over A,B` to span the actor range', () => {
+    // The note width should be at least as wide as the distance from A's
+    // left edge to B's right edge — matching Mermaid.js. A short caption
+    // would otherwise produce a narrow note that doesn't span A→B.
+    const svg = renderMermaidSVG(`sequenceDiagram
+      participant A
+      participant B
+      participant C
+      A->>B: hello
+      Note over A,C: x`)
+    // Extract the note polygon X extents.
+    const notePolyMatch = svg.match(/class="note"[^>]*>\s*<polygon points="([\d.\- ,]+)"/)
+    expect(notePolyMatch).toBeTruthy()
+    const xs = notePolyMatch![1]!.split(/\s+/).map(p => parseFloat(p.split(',')[0] ?? '0'))
+    const noteLeft = Math.min(...xs)
+    const noteRight = Math.max(...xs)
+    const noteWidth = noteRight - noteLeft
+
+    // Find actor A and C positions (their <rect> entries in <g class="actor" data-id="…">).
+    const actorRects = [...svg.matchAll(/class="actor"[^>]*data-id="([^"]+)"[^>]*>\s*<rect x="([\d.-]+)"[^>]*width="([\d.-]+)"/g)]
+    const actorBounds = new Map(actorRects.map(m => [m[1]!, { x: parseFloat(m[2]!), w: parseFloat(m[3]!) }]))
+    const aLeft = actorBounds.get('A')!.x
+    const cRight = actorBounds.get('C')!.x + actorBounds.get('C')!.w
+    const rangeWidth = cRight - aLeft
+
+    // Note must be at least as wide as the A→C range (within 1px tolerance).
+    expect(noteWidth).toBeGreaterThanOrEqual(rangeWidth - 1)
+  })
+
   it('falls back to labeled-tab rendering when rect color is unparseable', () => {
     // A bare `rect` with no color and no other recognizable form should still
     // render the block (with a tab) rather than vanish silently.

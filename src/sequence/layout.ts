@@ -99,6 +99,51 @@ export function layoutSequenceDiagram(
   let messageY = actorY + SEQ.actorHeight + SEQ.headerGap
   const messages: PositionedMessage[] = []
 
+  // Helpers for note sizing and X positioning. Hoisted so the same logic is
+  // reused for both "after" notes (positioned below a message) and "before"
+  // notes (positioned above a message at the start of a block or diagram).
+  const noteH = FONT_SIZES.edgeLabel + SEQ.notePadY * 2
+
+  /**
+   * Compute a note's width. For `Note over A,B,...` with at least two actors
+   * we stretch the note to span from the leftmost referenced actor's left
+   * edge to the rightmost referenced actor's right edge, matching Mermaid.js.
+   * The text width is used as a lower bound so long captions still fit.
+   */
+  const computeNoteWidth = (note: { text: string; position: 'left' | 'right' | 'over'; actorIds: string[] }): number => {
+    const textW = estimateTextWidth(note.text, FONT_SIZES.edgeLabel, FONT_WEIGHTS.edgeLabel) + SEQ.notePadX * 2
+    if (note.position === 'over' && note.actorIds.length >= 2) {
+      const firstIdx = actorIndex.get(note.actorIds[0] ?? '') ?? 0
+      const lastIdx = actorIndex.get(note.actorIds[note.actorIds.length - 1] ?? '') ?? firstIdx
+      const minIdx = Math.min(firstIdx, lastIdx)
+      const maxIdx = Math.max(firstIdx, lastIdx)
+      const rangeW = (actorCenterX[maxIdx]! + actorWidths[maxIdx]! / 2) - (actorCenterX[minIdx]! - actorWidths[minIdx]! / 2)
+      return Math.max(rangeW, textW)
+    }
+    return Math.max(SEQ.noteWidth, textW)
+  }
+
+  /** Compute a note's X position given its already-computed width. */
+  const computeNoteX = (note: { position: 'left' | 'right' | 'over'; actorIds: string[] }, width: number): number => {
+    const firstActorIdx = actorIndex.get(note.actorIds[0] ?? '') ?? 0
+    if (note.position === 'left') {
+      return actorCenterX[firstActorIdx]! - actorWidths[firstActorIdx]! / 2 - width - SEQ.noteGap
+    }
+    if (note.position === 'right') {
+      return actorCenterX[firstActorIdx]! + actorWidths[firstActorIdx]! / 2 + SEQ.noteGap
+    }
+    // `over`
+    if (note.actorIds.length > 1) {
+      const lastActorIdx = actorIndex.get(note.actorIds[note.actorIds.length - 1] ?? '') ?? firstActorIdx
+      const minIdx = Math.min(firstActorIdx, lastActorIdx)
+      const maxIdx = Math.max(firstActorIdx, lastActorIdx)
+      const rangeLeft = actorCenterX[minIdx]! - actorWidths[minIdx]! / 2
+      const rangeRight = actorCenterX[maxIdx]! + actorWidths[maxIdx]! / 2
+      return (rangeLeft + rangeRight) / 2 - width / 2
+    }
+    return actorCenterX[firstActorIdx]! - width / 2
+  }
+
   // Pre-scan blocks to determine which message indices need extra vertical
   // space for block headers (e.g. "alt [Valid credentials]") or divider
   // labels (e.g. "[else Invalid]"). Without this, messages inside blocks
@@ -116,15 +161,75 @@ export function layoutSequenceDiagram(
     }
   }
 
-  // Pre-group notes by the message index they follow, so we can position
-  // them inline during the message stacking loop (avoids overlap bugs).
+  // Pre-group notes by their semantic anchor:
+  //   - `notesByAfterIndex` holds notes that appear BELOW the message at
+  //     their `afterIndex` (the default, e.g. `A->>B: ... ; Note over A,B: ...`).
+  //   - `notesByBeforeIndex` holds notes whose `before` flag is true. These
+  //     were parsed at the start of a block (or before any message), and must
+  //     render ABOVE the message at `afterIndex + 1` so they land *inside*
+  //     the surrounding block rather than in the gap before it.
   const notesByAfterIndex = new Map<number, typeof diagram.notes>()
+  const notesByBeforeIndex = new Map<number, typeof diagram.notes>()
   for (const note of diagram.notes) {
-    const list = notesByAfterIndex.get(note.afterIndex) ?? []
-    list.push(note)
-    notesByAfterIndex.set(note.afterIndex, list)
+    if (note.before) {
+      const target = note.afterIndex + 1
+      const list = notesByBeforeIndex.get(target) ?? []
+      list.push(note)
+      notesByBeforeIndex.set(target, list)
+    } else {
+      const list = notesByAfterIndex.get(note.afterIndex) ?? []
+      list.push(note)
+      notesByAfterIndex.set(note.afterIndex, list)
+    }
   }
+
+  // Reserve vertical space above each target message to fit its before-notes,
+  // and track how much top padding each block needs to grow by so its header
+  // tab clears the notes (otherwise the tab would overlap a note that's the
+  // first content inside the block).
+  //
+  // Per before-note: noteH + 4 (gap above the note). Plus a trailing 4 for the
+  // gap between the last note's bottom and the message arrow below.
+  const beforeNotesExtraByMsgIdx = new Map<number, number>()
+  for (const [target, notes] of notesByBeforeIndex) {
+    const totalH = notes.length * (noteH + 4) + 4
+    beforeNotesExtraByMsgIdx.set(target, totalH)
+    const prev = extraSpaceBefore.get(target) ?? 0
+    extraSpaceBefore.set(target, prev + totalH)
+  }
+  // Map blockIndex → extra top padding for blocks that contain a before-note
+  // as their first content.
+  const blockExtraTop = new Map<number, number>()
+  diagram.blocks.forEach((block, bi) => {
+    const extra = beforeNotesExtraByMsgIdx.get(block.startIndex) ?? 0
+    if (extra > 0) blockExtraTop.set(bi, extra)
+  })
+
   const positionedNotes: PositionedNote[] = []
+
+  /** Place a "before" note inside the gap above messageY. Returns the next Y to use. */
+  const placeBeforeNotes = (msgIdx: number, msgY: number) => {
+    const notes = notesByBeforeIndex.get(msgIdx)
+    if (!notes || notes.length === 0) return
+    // Stack notes upward from (msgY - 4) so the last note sits just above
+    // the message arrow, with each preceding note above that with a gap.
+    let cursor = msgY - 4
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const note = notes[i]!
+      const w = computeNoteWidth(note)
+      cursor -= noteH
+      positionedNotes.push({
+        text: note.text,
+        x: computeNoteX(note, w),
+        y: cursor,
+        width: w,
+        height: noteH,
+        position: note.position,
+        actors: note.actorIds,
+      })
+      cursor -= 4
+    }
+  }
 
   // Track activation stack per actor: array of { startY, depth } objects
   // Depth is used to offset nested activations horizontally for visual clarity
@@ -138,9 +243,16 @@ export function layoutSequenceDiagram(
     const toIdx = actorIndex.get(msg.to) ?? 0
     const isSelf = msg.from === msg.to
 
-    // Add extra vertical space if this message sits below a block header or divider
+    // Add extra vertical space if this message sits below a block header,
+    // divider, or any before-notes anchored to this message.
     const extra = extraSpaceBefore.get(msgIdx) ?? 0
     if (extra > 0) messageY += extra
+
+    // Position before-notes (notes that appeared at the start of a block or
+    // before any message) in the reserved space immediately above this
+    // message. blockExtraTop above guarantees the block's tab header is
+    // already drawn higher than where these notes will land.
+    placeBeforeNotes(msgIdx, messageY)
 
     const x1 = actorCenterX[fromIdx]!
     const x2 = actorCenterX[toIdx]!
@@ -199,28 +311,8 @@ export function layoutSequenceDiagram(
       let noteY = messages[msgIdx]!.y + selfLoopExtra + 8
 
       for (const note of notesForMsg) {
-        const noteW = Math.max(
-          SEQ.noteWidth,
-          estimateTextWidth(note.text, FONT_SIZES.edgeLabel, FONT_WEIGHTS.edgeLabel) + SEQ.notePadX * 2
-        )
-        const noteH = FONT_SIZES.edgeLabel + SEQ.notePadY * 2
-
-        // X positioning based on actor position and note type
-        const firstActorIdx = actorIndex.get(note.actorIds[0] ?? '') ?? 0
-        let noteX: number
-        if (note.position === 'left') {
-          noteX = actorCenterX[firstActorIdx]! - actorWidths[firstActorIdx]! / 2 - noteW - SEQ.noteGap
-        } else if (note.position === 'right') {
-          noteX = actorCenterX[firstActorIdx]! + actorWidths[firstActorIdx]! / 2 + SEQ.noteGap
-        } else {
-          // over — center between first and last actor
-          if (note.actorIds.length > 1) {
-            const lastActorIdx = actorIndex.get(note.actorIds[note.actorIds.length - 1] ?? '') ?? firstActorIdx
-            noteX = (actorCenterX[firstActorIdx]! + actorCenterX[lastActorIdx]!) / 2 - noteW / 2
-          } else {
-            noteX = actorCenterX[firstActorIdx]! - noteW / 2
-          }
-        }
+        const noteW = computeNoteWidth(note)
+        const noteX = computeNoteX(note, noteW)
 
         positionedNotes.push({
           text: note.text,
@@ -258,11 +350,16 @@ export function layoutSequenceDiagram(
   }
 
   // 4. Position blocks (loop/alt/opt)
-  const blocks: PositionedBlock[] = diagram.blocks.map(block => {
-    // Block spans from the Y of startIndex to endIndex messages
+  const blocks: PositionedBlock[] = diagram.blocks.map((block, bi) => {
+    // Block spans from the Y of startIndex to endIndex messages. When the
+    // block opens with before-notes as its first content, extend the top
+    // padding by their total vertical contribution so the block's header
+    // tab is drawn above the notes (otherwise the tab and the topmost note
+    // would overlap).
     const startMsg = messages[block.startIndex]
     const endMsg = messages[block.endIndex]
-    const blockTop = (startMsg?.y ?? messageY) - SEQ.blockPadTop
+    const extraTop = blockExtraTop.get(bi) ?? 0
+    const blockTop = (startMsg?.y ?? messageY) - SEQ.blockPadTop - extraTop
     const blockBottom = (endMsg?.y ?? messageY) + SEQ.blockPadBottom + 12
 
     // Block width spans all actors involved in its messages

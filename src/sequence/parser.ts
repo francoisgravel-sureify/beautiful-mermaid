@@ -78,11 +78,24 @@ export function parseSequenceDiagram(lines: string[]): SequenceDiagram {
       if (posStr === 'left of') position = 'left'
       else if (posStr === 'right of') position = 'right'
 
+      // A note is "anchored at the start" of a region when it appears either
+      // before any message in the diagram, or as the first element inside a
+      // freshly opened block (the topmost block's startIndex still equals the
+      // current message count because no message has been pushed since it
+      // opened). Such notes need to render *above* the next message rather
+      // than below the previous one, so they land inside the surrounding
+      // block instead of in the gap before it.
+      const topBlock = blockStack[blockStack.length - 1]
+      const before =
+        diagram.messages.length === 0 ||
+        (topBlock !== undefined && topBlock.startIndex === diagram.messages.length)
+
       diagram.notes.push({
         actorIds: noteActorIds,
         text,
         position,
         afterIndex: diagram.messages.length - 1,
+        before,
       })
       continue
     }
